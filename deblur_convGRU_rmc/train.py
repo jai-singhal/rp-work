@@ -12,8 +12,8 @@ import os
 from pixelwise_a3c import *
 
 #_/_/_/ paths _/_/_/ 
-TRAINING_DATA_PATH          = "../training_BSD68.txt"
-TESTING_DATA_PATH           = "../testing.txt"
+TRAINING_DATA_PATH          = "training.txt"
+TESTING_DATA_PATH           = "testing.txt"
 IMAGE_DIR_PATH              = "../"
 SAVE_PATH            = "./model/deblur_myfcn_working_"
  
