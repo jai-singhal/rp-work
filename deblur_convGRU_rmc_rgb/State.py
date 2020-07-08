@@ -4,6 +4,8 @@ import cv2
 from skimage import color, data, restoration
 from scipy.signal import convolve2d as conv2
 from pprint import pprint
+from skimage.filters import unsharp_mask
+
 
 class State():
     def __init__(self, size):
@@ -22,61 +24,82 @@ class State():
 
         
     def step(self, act, inner_state):
-        # gaussian = np.zeros(self.image.shape, self.image.dtype)
-        # median = np.zeros(self.image.shape, self.image.dtype)
-        sharpness1 = np.zeros(self.image.shape, self.image.dtype)
-        sharpness2 = np.zeros(self.image.shape, self.image.dtype)
-        u_wiener = np.zeros(self.image.shape, self.image.dtype)
-        wiener_up = np.zeros(self.image.shape, self.image.dtype)
-        wiener_down = np.zeros(self.image.shape, self.image.dtype)
-        wiener_deconv = np.zeros(self.image.shape, self.image.dtype)
-        bilateral = np.zeros(self.image.shape, self.image.dtype)
-#         box = np.zeros(self.image.shape, self.image.dtype)
-#         richardson = np.zeros(self.image.shape, self.image.dtype)
-
-        
+        bgr_t = np.transpose(self.image, (0,2,3,1))
         b, c, h, w = self.image.shape
-        psf = np.ones((5, 5)) / 25
-        kernel1 = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
-        kernel2 = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
 
-#         for i in range(0,b):
-#             cv2.imwrite('./temp/' + str(i) + '_input.png', (self.image[i,0]*255).astype(np.uint8))
+        sharpness1 = np.zeros(bgr_t.shape, bgr_t.dtype)
+        sharpness2 = np.zeros(bgr_t.shape, bgr_t.dtype)
+
         
-        bgrt = (self.image*255).astype(np.uint8)
+        bilateral1 = np.zeros(bgr_t.shape, bgr_t.dtype)
+        bilateral2 = np.zeros(bgr_t.shape, bgr_t.dtype)
+
+        pix_up = np.zeros(bgr_t.shape, bgr_t.dtype)
+        pix_down = np.zeros(bgr_t.shape, bgr_t.dtype)
+
+        sharpness_u_m1 = np.zeros(bgr_t.shape, bgr_t.dtype)
+        sharpness_u_m2 = np.zeros(bgr_t.shape, bgr_t.dtype)
+
+        sharpness_h_p = np.zeros(bgr_t.shape, bgr_t.dtype)
+        sharpness_l_p = np.zeros(bgr_t.shape, bgr_t.dtype)
+
+        kernel1 = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
+        kernel2 = np.array([[-1,-1,-1], [-1, 9,-1], [-1,-1,-1]])
+        
+        # High-pass kernel
+        kernel4 = np.array([[  0  , -.5 ,    0 ],
+                  [-.5 ,   3  , -.5 ],
+                  [  0  , -.5 ,    0 ]])
+        
+        # Low-pass kernel
+        kernel5 = np.array([[1 / 9, 1 / 9, 1 / 9],
+                  [1 / 9, 1 / 9, 1 / 9],
+                  [1 / 9, 1 / 9, 1 / 9]])
+        
         for i in range(0,b):
             # sharpness
-            sharpness1[i, 0] = cv2.filter2D(bgrt[i, 0], -1, kernel1).astype(np.uint8)
-            sharpness2[i, 0] = cv2.filter2D(bgrt[i, 0], -1, kernel2).astype(np.uint8)
-            
-            bilateral[i,0] = cv2.bilateralFilter(bgrt[i,0], d=5, sigmaColor=0.1, sigmaSpace=5).astype(np.uint8)
+            sharpness1[i]  = cv2.filter2D(bgr_t[i], -1, kernel1)
+            sharpness2[i]  = cv2.filter2D(bgr_t[i], -1, kernel2)
 
-            temp, _ = restoration.unsupervised_wiener(bgrt[i, 0], psf, clip = False)
-            u_wiener[i, 0] = temp.astype(np.uint8)
-        
-            wiener_up[i,0] = restoration.wiener(bgrt[i, 0], psf, clip = False, balance = 1.15).astype(np.uint8)
-            wiener_down[i,0] = restoration.wiener(bgrt[i, 0], psf, clip = False, balance = 0.95).astype(np.uint8)
-    
+            sharpness_h_p[i]  = cv2.filter2D(bgr_t[i], -1, kernel4)
+            sharpness_l_p[i]  = cv2.filter2D(bgr_t[i], -1, kernel5)
+            
+            sharpness_u_m1[i]  = unsharp_mask(bgr_t[i], radius=5, amount=1, multichannel = True).astype(np.float32)
+            sharpness_u_m2[i]  = unsharp_mask(bgr_t[i], radius=5, amount=2, multichannel = True).astype(np.float32)
+
+            # smoothening
+            bilateral1[i]    = cv2.bilateralFilter(bgr_t[i], d=5, sigmaColor=1.0, sigmaSpace=5)
+            bilateral2[i]   = cv2.bilateralFilter(bgr_t[i], d=5, sigmaColor=0.1, sigmaSpace=5)
+
+            pix_up[i]        = bgr_t[i]*1.05
+            pix_down[i]      = bgr_t[i]*0.95
+
+            
         if self.m % 50 == 0:
             (unique, counts) = np.unique(act, return_counts=True)
             frequencies = np.asarray((unique, counts)).T
             pprint(frequencies)
         
         self.m += 1
-#         print(self.image, sharpness1)
         
-        act_3channel = np.stack([act],axis=1)
 
-        bgrt = np.where(act_3channel == 1, sharpness1, bgrt)
-        bgrt = np.where(act_3channel == 2, bilateral, bgrt)
-        bgrt = np.where(act_3channel == 3, u_wiener, bgrt)
-        bgrt = np.where(act_3channel == 4, wiener_up, bgrt)
-        bgrt = np.where(act_3channel == 5, wiener_down, bgrt)
-        bgrt = np.where(act_3channel == 6, sharpness2, bgrt)
+        act_3channel = np.stack([act, act, act],axis=1)
+
+        self.image = np.where(act_3channel == 1, np.transpose(sharpness1, (0,3,1,2)), self.image)
+        self.image = np.where(act_3channel == 2, np.transpose(sharpness1, (0,3,1,2)), self.image)
+
+        self.image = np.where(act_3channel == 3, np.transpose(bilateral1, (0,3,1,2)), self.image)
+        self.image = np.where(act_3channel == 4, np.transpose(bilateral2, (0,3,1,2)), self.image)
+
+        self.image = np.where(act_3channel == 5, np.transpose(pix_up, (0,3,1,2)), self.image)
+        self.image = np.where(act_3channel == 6, np.transpose(pix_down, (0,3,1,2)), self.image)
+
+        self.image = np.where(act_3channel == 7, np.transpose(sharpness_l_p, (0,3,1,2)), self.image)
+        self.image = np.where(act_3channel == 8, np.transpose(sharpness_h_p, (0,3,1,2)), self.image)
         
-        self.image = (bgrt/255).astype(np.float32)
-#         for i in range(0,b):
-#             cv2.imwrite('./temp/' + str(i) + '_output.png', (self.image[i,0]*255).astype(np.uint8))
+        self.image = np.where(act_3channel == 9, np.transpose(sharpness_u_m1, (0,3,1,2)), self.image)
+        self.image = np.where(act_3channel == 10, np.transpose(sharpness_u_m2, (0,3,1,2)), self.image)
+
         
         self.tensor[:,:self.image.shape[1],:,:] = self.image
         self.tensor[:,-64:,:,:] = inner_state

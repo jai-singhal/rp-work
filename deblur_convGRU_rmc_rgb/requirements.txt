@@ -1,0 +1,7 @@
+chainner
+chainnerrl
+pandas
+numpy==1.18.1
+matplotlib==3.2.1
+skimage
+cupy

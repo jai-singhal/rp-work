@@ -1,5 +1,7 @@
 ## Resources
 
+-https://www.taylorpetrick.com/blog/post/convolution-part3 
+
 - Network and kernel estimation: Learning to Deblur
 	https://arxiv.org/pdf/1406.7444.pdf
 

@@ -9,12 +9,18 @@ import chainerrl
 import State
 import os
 from pixelwise_a3c import *
+import imgaug.augmenters as iaa
+from skimage.metrics import structural_similarity
+import time 
 
 #_/_/_/ paths _/_/_/ 
-TRAINING_DATA_PATH          = "../training_BSD68.txt"
-TESTING_DATA_PATH           = "../testing.txt"
-IMAGE_DIR_PATH              = "../"
-SAVE_PATH            = "./model/denoise_myfcn_"
+# TESTING_DATA_PATH_BLUR           = "testing_gopro_blur.txt"
+# TESTING_DATA_PATH_SHARP           = "testing_gopro_sharp.txt"
+TRAINING_DATA_PATH          = "training.txt"
+TESTING_DATA_PATH          = "testing.txt"
+
+IMAGE_DIR_PATH              = ""
+SAVE_PATH            = "./model/rgb_deblur_30000"
  
 #_/_/_/ training parameters _/_/_/ 
 LEARNING_RATE    = 0.001
@@ -28,36 +34,43 @@ GAMMA = 0.95 # discount factor
 MEAN = 0
 SIGMA = 15
 
-N_ACTIONS = 15
-MOVE_RANGE = 3 #number of actions that move the pixel values. e.g., when MOVE_RANGE=3, there are three actions: pixel_value+=1, +=0, -=1.
+N_ACTIONS = 12
 CROP_SIZE = 70
+MOVE_RANGE = 3
+GPU_ID = 0
 
-GPU_ID = 1
 
-c=0
-def test(loader, agent, fout):
+def test(mini_batch_loader, agent, fout, episode):
     sum_psnr     = 0
+    sum_ssim     = 0
     sum_reward = 0
     test_data_size = MiniBatchLoader.count_paths(TESTING_DATA_PATH)
-    current_state = State.State((TEST_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE), MOVE_RANGE)
+    current_state = State.State((TEST_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE))
+    
+    try:
+        os.mkdir(f"resultimage/{episode}")
+    except:
+        pass
+    try:
+        os.mkdir(f"resultimage/input")
+    except:
+        pass
+    
     for i in range(0, test_data_size, TEST_BATCH_SIZE):
-        raw_x = loader.load_testing_data(np.array(range(i, i+TEST_BATCH_SIZE)))
-#         raw_n = np.random.normal(MEAN,SIGMA,raw_x.shape).astype(raw_x.dtype)/255
-
-        # generate BLUR(MOTION)
-        size = 15
-        # generating the kernel
-        kernel_motion_blur = np.zeros((size, size))
-        kernel_motion_blur[int((size-1)/2), :] = np.ones(size)
-        kernel_motion_blur = kernel_motion_blur / size
-        # applying the kernel to the input image
+        raw_x = mini_batch_loader.load_testing_data(np.array(range(i, i+TEST_BATCH_SIZE)))
+        
         raw_n = np.zeros(raw_x.shape, raw_x.dtype)
         b, c, h, w = raw_x.shape
-        for k in range(0, b):
-            raw_n[k, 0] = cv2.filter2D(raw_x[k], -1, kernel_motion_blur)
-        
 
-        current_state.reset(raw_x,raw_n)
+        bgr_x = np.transpose(raw_x, (0,2,3,1))
+        bgr_n = np.transpose(raw_n, (0,2,3,1))
+        for j in range(0, b):
+            aug = iaa.imgcorruptlike.MotionBlur(severity=4)
+            bgr_n[j] = aug(images = [(bgr_x[j]*255).astype(np.uint8),])[0]
+        raw_n = np.transpose(bgr_n, (0,3,1,2))
+        raw_n = (raw_n).astype(np.float32)/255
+        
+        current_state.reset(raw_n)
         reward = np.zeros(raw_x.shape, raw_x.dtype)*255
         
         for t in range(0, EPISODE_LEN):
@@ -71,39 +84,64 @@ def test(loader, agent, fout):
             
         I = np.maximum(0,raw_x)
         I = np.minimum(1,I)
-        N = np.maximum(0,raw_x+raw_n)
+        N = np.maximum(0,raw_n)
         N = np.minimum(1,N)
         p = np.maximum(0,current_state.image)
         p = np.minimum(1,p)
-        I = (I[0]*255+0.5).astype(np.uint8)
-        N = (N[0]*255+0.5).astype(np.uint8)
-        p = (p[0]*255+0.5).astype(np.uint8)
+        I = (I[0]*255).astype(np.uint8)
+        N = (N[0]*255).astype(np.uint8)
+        p = (p[0]*255).astype(np.uint8)
         p = np.transpose(p,(1,2,0))
         I = np.transpose(I,(1,2,0))
         N = np.transpose(N,(1,2,0))
-        
-        print("./resultimage/"+str(i)+"_output.png")
-        cv2.imwrite('./resultimage/'+str(i)+'_output.png',p)
-        cv2.imwrite('./resultimage/'+str(i)+'_input.png',N)
-        c += 1
+
+        (score, diff) = structural_similarity(N, p, full=True, multichannel=True)
+
         sum_psnr += cv2.PSNR(p, I)
+        sum_ssim += score
+        
+        cv2.imwrite('./resultimage/input/' + str(i) + '_input.png', N)
+        cv2.imwrite('./resultimage/' + str(episode) + '/' + str(i) + '_output.png',p)
+        
  
-    print("test total reward {a}, PSNR {b}".format(a=sum_reward*255/test_data_size, b=sum_psnr/test_data_size))
-    fout.write("test total reward {a}, PSNR {b}\n".format(a=sum_reward*255/test_data_size, b=sum_psnr/test_data_size))
+    print("Test total reward {a}, PSNR {b}, SSIM {c}".format(
+        a=sum_reward*255/test_data_size, 
+        b=sum_psnr/test_data_size, 
+        c = sum_ssim/test_data_size
+    ))
+
+    fout.write("Test total reward {a}, PSNR {b}, SSIM {c}".format(
+        a=sum_reward*255/test_data_size, 
+        b=sum_psnr/test_data_size, 
+        c = sum_ssim/test_data_size
+    ))
     sys.stdout.flush()
  
+
  
 def main(fout):
     #_/_/_/ load dataset _/_/_/ 
+    # mini_batch_loader_x = MiniBatchLoader(
+    #     TRAINING_DATA_PATH, 
+    #     TESTING_DATA_PATH_BLUR, 
+    #     IMAGE_DIR_PATH, 
+    #     CROP_SIZE)
+    
+    # mini_batch_loader_y = MiniBatchLoader(
+    #     TRAINING_DATA_PATH, 
+    #     TESTING_DATA_PATH_SHARP, 
+    #     IMAGE_DIR_PATH, 
+    #     CROP_SIZE) 
     mini_batch_loader = MiniBatchLoader(
         TRAINING_DATA_PATH, 
         TESTING_DATA_PATH, 
         IMAGE_DIR_PATH, 
-        CROP_SIZE)
- 
+        CROP_SIZE
+    )
+
     chainer.cuda.get_device_from_id(GPU_ID).use()
 
-    current_state = State.State((TRAIN_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE), MOVE_RANGE)
+    current_state = State.State((TRAIN_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE))
  
     # load myfcn model
     model = MyFcn(N_ACTIONS)
@@ -113,7 +151,7 @@ def main(fout):
     optimizer.setup(model)
 
     agent = PixelWiseA3C_InnerState_ConvR(model, optimizer, EPISODE_LEN, GAMMA)
-    chainer.serializers.load_npz('./model/denoise_myfcn_new_2700/model.npz', agent.model)
+    chainer.serializers.load_npz('{}/model.npz'.format(SAVE_PATH), agent.model)
     agent.act_deterministically = True
     agent.model.to_gpu()
 

@@ -34,30 +34,34 @@ CROP_SIZE = 70
 
 GPU_ID = 1
 
-c=0
-def test(loader, agent, fout):
+def test(loader, agent, fout, episode):
     sum_psnr     = 0
     sum_reward = 0
     test_data_size = MiniBatchLoader.count_paths(TESTING_DATA_PATH)
-    current_state = State.State((TEST_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE), MOVE_RANGE)
+    current_state = State.State((TEST_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE))
+    
+    try:
+        os.mkdir(f"resultimage/{episode}")
+    except:
+        pass
+    try:
+        os.mkdir(f"resultimage/input")
+    except:
+        pass
+    
     for i in range(0, test_data_size, TEST_BATCH_SIZE):
         raw_x = loader.load_testing_data(np.array(range(i, i+TEST_BATCH_SIZE)))
-#         raw_n = np.random.normal(MEAN,SIGMA,raw_x.shape).astype(raw_x.dtype)/255
-
-        # generate BLUR(MOTION)
-        size = 15
-        # generating the kernel
-        kernel_motion_blur = np.zeros((size, size))
-        kernel_motion_blur[int((size-1)/2), :] = np.ones(size)
-        kernel_motion_blur = kernel_motion_blur / size
-        # applying the kernel to the input image
+        
         raw_n = np.zeros(raw_x.shape, raw_x.dtype)
         b, c, h, w = raw_x.shape
-        for k in range(0, b):
-            raw_n[k, 0] = cv2.filter2D(raw_x[k], -1, kernel_motion_blur)
+        for j in range(0, b):
+            aug = iaa.imgcorruptlike.DefocusBlur(severity=3)
+            raw_n[j, 0] = aug(images = [(raw_x[j, 0]*255).astype(np.uint8),])[0]
+#             raw_n[j, 0] = cv2.blur(raw_x[j, 0]*255, ksize = (10, 10)) 
+            
+        raw_n = (raw_n).astype(np.float32)/255
         
-
-        current_state.reset(raw_x,raw_n)
+        current_state.reset(raw_n)
         reward = np.zeros(raw_x.shape, raw_x.dtype)*255
         
         for t in range(0, EPISODE_LEN):
@@ -71,27 +75,26 @@ def test(loader, agent, fout):
             
         I = np.maximum(0,raw_x)
         I = np.minimum(1,I)
-        N = np.maximum(0,raw_x+raw_n)
+        N = np.maximum(0,raw_n)
         N = np.minimum(1,N)
         p = np.maximum(0,current_state.image)
         p = np.minimum(1,p)
-        I = (I[0]*255+0.5).astype(np.uint8)
-        N = (N[0]*255+0.5).astype(np.uint8)
-        p = (p[0]*255+0.5).astype(np.uint8)
+        I = (I[0]*255).astype(np.uint8)
+        N = (N[0]*255).astype(np.uint8)
+        p = (p[0]*255).astype(np.uint8)
         p = np.transpose(p,(1,2,0))
         I = np.transpose(I,(1,2,0))
         N = np.transpose(N,(1,2,0))
         
-        print("./resultimage/"+str(i)+"_output.png")
-        cv2.imwrite('./resultimage/'+str(i)+'_output.png',p)
-        cv2.imwrite('./resultimage/'+str(i)+'_input.png',N)
-        c += 1
         sum_psnr += cv2.PSNR(p, I)
+
+        cv2.imwrite('./resultimage/input/' + str(i) + '_input.png', N)
+        cv2.imwrite('./resultimage/' + str(episode) + '/' + str(i) + '_output.png',p)
+        
  
     print("test total reward {a}, PSNR {b}".format(a=sum_reward*255/test_data_size, b=sum_psnr/test_data_size))
     fout.write("test total reward {a}, PSNR {b}\n".format(a=sum_reward*255/test_data_size, b=sum_psnr/test_data_size))
     sys.stdout.flush()
- 
  
 def main(fout):
     #_/_/_/ load dataset _/_/_/ 

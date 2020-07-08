@@ -2,7 +2,6 @@ from mini_batch_loader import *
 from chainer import serializers
 from MyFCN import *
 from chainer import cuda, optimizers, Variable
-import numpy as np
 import sys
 import math
 import time
@@ -10,12 +9,14 @@ import chainerrl
 import State
 import os
 from pixelwise_a3c import *
+import imgaug.augmenters as iaa
+
 
 #_/_/_/ paths _/_/_/ 
-TRAINING_DATA_PATH          = "training.txt"
-TESTING_DATA_PATH           = "testing.txt"
+TRAINING_DATA_PATH          = "../training_BSD68.txt"
+TESTING_DATA_PATH           = "../testing.txt"
 IMAGE_DIR_PATH              = "../"
-SAVE_PATH            = "./model/deblur_myfcn_working_"
+SAVE_PATH            = "./model/deblur_myfcn_working123_focussed_"
  
 #_/_/_/ training parameters _/_/_/ 
 LEARNING_RATE    = 0.001
@@ -23,19 +24,13 @@ TRAIN_BATCH_SIZE = 64
 TEST_BATCH_SIZE  = 1 #must be 1
 N_EPISODES           = 30000
 EPISODE_LEN = 5
-SNAPSHOT_EPISODES  = 50
-TEST_EPISODES = 50
+SNAPSHOT_EPISODES  = 1000
+TEST_EPISODES = 1000
 GAMMA = 0.95 # discount factor
 
-#noise setting
-MEAN = 0
-SIGMA = 15
-
-N_ACTIONS = 8
-MOVE_RANGE = 3 
-#number of actions that move the pixel values. e.g., when MOVE_RANGE=3, there are three actions: pixel_value+=1, +=0, -=1.
+N_ACTIONS = 11
 CROP_SIZE = 70
-
+MOVE_RANGE = 3
 GPU_ID = 1
 
 
@@ -61,7 +56,7 @@ def test(loader, agent, fout, episode):
     sum_psnr     = 0
     sum_reward = 0
     test_data_size = MiniBatchLoader.count_paths(TESTING_DATA_PATH)
-    current_state = State.State((TEST_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE), MOVE_RANGE)
+    current_state = State.State((TEST_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE))
     
     try:
         os.mkdir(f"resultimage/{episode}")
@@ -78,10 +73,13 @@ def test(loader, agent, fout, episode):
         raw_n = np.zeros(raw_x.shape, raw_x.dtype)
         b, c, h, w = raw_x.shape
         for j in range(0, b):
-            raw_n[j, 0] = cv2.blur(raw_x[j, 0], ksize = (10, 10)) 
+            aug = iaa.imgcorruptlike.DefocusBlur(severity=3)
+            raw_n[j, 0] = aug(images = [(raw_x[j, 0]*255).astype(np.uint8),])[0]
+#             raw_n[j, 0] = cv2.blur(raw_x[j, 0]*255, ksize = (10, 10)) 
             
-            
-        current_state.reset(raw_x,raw_n)
+        raw_n = (raw_n).astype(np.float32)/255
+        
+        current_state.reset(raw_n)
         reward = np.zeros(raw_x.shape, raw_x.dtype)*255
         
         for t in range(0, EPISODE_LEN):
@@ -127,7 +125,7 @@ def main(fout):
  
     chainer.cuda.get_device_from_id(GPU_ID).use()
 
-    current_state = State.State((TRAIN_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE), MOVE_RANGE)
+    current_state = State.State((TRAIN_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE))
  
     # load myfcn model
     model = MyFcn(N_ACTIONS)
@@ -152,14 +150,18 @@ def main(fout):
         # load images
         r = indices[i:i+TRAIN_BATCH_SIZE]
         raw_x = mini_batch_loader.load_training_data(r)
-
+        
         raw_n = np.zeros(raw_x.shape, raw_x.dtype)
         b, c, h, w = raw_x.shape
-        for i in range(0, b):
-            raw_n[i, 0] = cv2.blur(raw_x[i, 0], ksize = (10, 10)) 
+        for j in range(0, b):
+            aug = iaa.imgcorruptlike.DefocusBlur(severity=3)
+            raw_n[j, 0] = aug(images = [(raw_x[j, 0]*255).astype(np.uint8),])[0]
+#             raw_n[j, 0] = cv2.blur(raw_x[j, 0]*255, ksize = (10, 10)) 
+            
+        raw_n = (raw_n).astype(np.float32)/255
 
         # initialize the current state and reward
-        current_state.reset(raw_x, raw_n)
+        current_state.reset(raw_n)
         reward = np.zeros(raw_x.shape, raw_x.dtype)
         sum_reward = 0
         
@@ -168,12 +170,12 @@ def main(fout):
             action, inner_state = agent.act_and_train(current_state.tensor, reward)
             current_state.step(action, inner_state)
             reward = np.square(raw_x - previous_image) - np.square(raw_x - current_state.image)
-            sum_reward += np.mean(reward)*np.power(GAMMA,t)
+            sum_reward = sum_reward + np.mean(reward)*np.power(GAMMA,t) 
 
-            
+        rl, cl, pl = variance_of_laplacianreward(raw_x, current_state.image, previous_image)
         print((current_state.image - raw_x).mean(), (current_state.image - raw_x).var())
         print((current_state.image - previous_image).mean(), (current_state.image - previous_image).var())
-        print("Laplace:" , variance_of_laplacianreward(raw_x, current_state.image, previous_image))
+        print("Laplace:" , rl, cl, pl)
             
         agent.stop_episode_and_train(current_state.tensor, reward, True)
         print("train total reward {a}".format(a=sum_reward*255))

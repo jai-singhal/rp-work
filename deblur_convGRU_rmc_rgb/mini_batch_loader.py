@@ -9,7 +9,6 @@ class MiniBatchLoader(object):
         # load data paths
         self.training_path_infos = self.read_paths(train_path, image_dir_path)
         self.testing_path_infos = self.read_paths(test_path, image_dir_path)
- 
         self.crop_size = crop_size
  
     # test ok
@@ -57,7 +56,7 @@ class MiniBatchLoader(object):
                 img = cv2.imread(path, cv2.IMREAD_COLOR)
                 if img is None:
                     raise RuntimeError("invalid image: {i}".format(i=path))
-                h, w = img.shape
+                h, w, c = img.shape
 
                 rand_range_h = h-self.crop_size
                 rand_range_w = w-self.crop_size
@@ -72,7 +71,7 @@ class MiniBatchLoader(object):
                 img = (img/255).astype(np.float32)
                 # TODO: CHANGE THE COLOR MODEL HERE
                 
-                xs[i, 0, :, :] = np.transpose(img, (2,0,1))
+                xs[i, :, :, :] = np.transpose(img, (2,0,1))
 
         elif mini_batch_size == 1:
             for i, index in enumerate(indices):
@@ -82,12 +81,12 @@ class MiniBatchLoader(object):
                 if img is None:
                     raise RuntimeError("invalid image: {i}".format(i=path))
 
-            h, w = img.shape
+            h, w,c = img.shape
             xs = np.zeros((mini_batch_size, in_channels, h, w)).astype(np.float32)
             
             img = (img/255).astype(np.float32)
             # TODO: CHANGE THE COLOR MODEL HERE
-            xs[i, 0, :, :] = np.transpose(img, (2,0,1))
+            xs[i, :, :, :] = np.transpose(img, (2,0,1))
 
         else:
             raise RuntimeError("mini batch size must be 1 when testing")

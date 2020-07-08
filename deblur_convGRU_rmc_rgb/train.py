@@ -2,7 +2,6 @@ from mini_batch_loader import *
 from chainer import serializers
 from MyFCN import *
 from chainer import cuda, optimizers, Variable
-import numpy as np
 import sys
 import math
 import time
@@ -10,28 +9,43 @@ import chainerrl
 import State
 import os
 from pixelwise_a3c import *
-import cv2
+import imgaug.augmenters as iaa
+from skimage.metrics import structural_similarity
+
 
 #_/_/_/ paths _/_/_/ 
+# TRAINING_DATA_PATH_SHARP          = "training_gopro_sharp.txt"
+
+# TRAINING_DATA_PATH          = "training_gopro.txt"
+# TESTING_DATA_PATH           = "testing_gopro.txt"
 TRAINING_DATA_PATH          = "training.txt"
 TESTING_DATA_PATH           = "testing.txt"
-IMAGE_DIR_PATH              = "../"
-SAVE_PATH            = "./model/deblur_myfcn_working_"
+
+
+
+# TRAINING_DATA_PATH_BLUR          = "training_gopro_blur.txt"
+# TESTING_DATA_PATH_BLUR           = "testing_gopro_blur.txt"
+# TESTING_DATA_PATH_SHARP           = "testing_gopro_sharp.txt"
+
+IMAGE_DIR_PATH              = ""
+SAVE_PATH            = "./model/deblur_rgb_new_xy"
  
 #_/_/_/ training parameters _/_/_/ 
 LEARNING_RATE    = 0.001
-TRAIN_BATCH_SIZE = 64
+TRAIN_BATCH_SIZE = 40
 TEST_BATCH_SIZE  = 1 #must be 1
 N_EPISODES           = 30000
 EPISODE_LEN = 5
-SNAPSHOT_EPISODES  = 50
-TEST_EPISODES = 50
+SNAPSHOT_EPISODES  = 2000
+TEST_EPISODES = 1000
 GAMMA = 0.95 # discount factor
 
-N_ACTIONS = 8
+N_ACTIONS = 11
 CROP_SIZE = 70
+MOVE_RANGE = 3
+GPU_ID = 0
 
-GPU_ID = 1
+
 
 def variance_of_laplacianreward(raw_x, current_image_lab, raw_y_lab):
     variancel1 = np.zeros(TRAIN_BATCH_SIZE)
@@ -50,8 +64,9 @@ def variance_of_laplacianreward(raw_x, current_image_lab, raw_y_lab):
     return variancel1.mean(), variancel2.mean(), variancel3.mean()
 
 
-def test(loader, agent, fout, episode):
-    sum_psnr   = 0
+def test(mini_batch_loader, agent, fout, episode):
+    sum_psnr     = 0
+    sum_ssim     = 0
     sum_reward = 0
     test_data_size = MiniBatchLoader.count_paths(TESTING_DATA_PATH)
     current_state = State.State((TEST_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE))
@@ -66,15 +81,20 @@ def test(loader, agent, fout, episode):
         pass
     
     for i in range(0, test_data_size, TEST_BATCH_SIZE):
-        raw_x = loader.load_testing_data(np.array(range(i, i+TEST_BATCH_SIZE)))
+        raw_x = mini_batch_loader.load_testing_data(np.array(range(i, i+TEST_BATCH_SIZE)))
         
         raw_n = np.zeros(raw_x.shape, raw_x.dtype)
         b, c, h, w = raw_x.shape
+
+        bgr_x = np.transpose(raw_x, (0,2,3,1))
+        bgr_n = np.transpose(raw_n, (0,2,3,1))
         for j in range(0, b):
-            raw_n[j, 0] = cv2.blur(raw_x[j, 0], ksize = (10, 10)) 
-            
-            
-        current_state.reset(raw_x,raw_n)
+            aug = iaa.imgcorruptlike.MotionBlur(severity=4)
+            bgr_n[j] = aug(images = [(bgr_x[j]*255).astype(np.uint8),])[0]
+        raw_n = np.transpose(bgr_n, (0,3,1,2))
+        raw_n = (raw_n).astype(np.float32)/255
+        
+        current_state.reset(raw_n)
         reward = np.zeros(raw_x.shape, raw_x.dtype)*255
         
         for t in range(0, EPISODE_LEN):
@@ -98,15 +118,27 @@ def test(loader, agent, fout, episode):
         p = np.transpose(p,(1,2,0))
         I = np.transpose(I,(1,2,0))
         N = np.transpose(N,(1,2,0))
-        
-        sum_psnr += cv2.PSNR(p, I)
 
+        (score, diff) = structural_similarity(N, p, full=True, multichannel=True)
+
+        sum_psnr += cv2.PSNR(p, I)
+        sum_ssim += score
+        
         cv2.imwrite('./resultimage/input/' + str(i) + '_input.png', N)
         cv2.imwrite('./resultimage/' + str(episode) + '/' + str(i) + '_output.png',p)
         
  
-    print("test total reward {a}, PSNR {b}".format(a=sum_reward*255/test_data_size, b=sum_psnr/test_data_size))
-    fout.write("test total reward {a}, PSNR {b}\n".format(a=sum_reward*255/test_data_size, b=sum_psnr/test_data_size))
+    print("Test total reward {a}, PSNR {b}, SSIM {c}".format(
+        a=sum_reward*255/test_data_size, 
+        b=sum_psnr/test_data_size, 
+        c = sum_ssim/test_data_size
+    ))
+
+    fout.write("Test total reward {a}, PSNR {b}, SSIM {c}".format(
+        a=sum_reward*255/test_data_size, 
+        b=sum_psnr/test_data_size, 
+        c = sum_ssim/test_data_size
+    ))
     sys.stdout.flush()
  
  
@@ -116,8 +148,10 @@ def main(fout):
         TRAINING_DATA_PATH, 
         TESTING_DATA_PATH, 
         IMAGE_DIR_PATH, 
-        CROP_SIZE)
- 
+        CROP_SIZE
+    )
+
+
     chainer.cuda.get_device_from_id(GPU_ID).use()
 
     current_state = State.State((TRAIN_BATCH_SIZE,1,CROP_SIZE,CROP_SIZE))
@@ -146,28 +180,40 @@ def main(fout):
         r = indices[i:i+TRAIN_BATCH_SIZE]
         raw_x = mini_batch_loader.load_training_data(r)
 
+#         raw_x = mini_batch_loader_x.load_training_data(r)
+#         raw_n = mini_batch_loader_n.load_training_data(r)
+
         raw_n = np.zeros(raw_x.shape, raw_x.dtype)
         b, c, h, w = raw_x.shape
-        for i in range(0, b):
-            raw_n[i, 0] = cv2.blur(raw_x[i, 0], ksize = (10, 10)) 
+        
+        bgr_x = np.transpose(raw_x, (0,2,3,1))
+        bgr_n = np.transpose(raw_n, (0,2,3,1))
+        for j in range(0, b):
+            aug = iaa.imgcorruptlike.MotionBlur(severity=4)
+            bgr_n[j] = aug(images = [(bgr_x[j]*255).astype(np.uint8),])[0]
+        raw_n = np.transpose(bgr_n, (0,3,1,2))
+        raw_n = (raw_n).astype(np.float32)/255
 
         # initialize the current state and reward
-        current_state.reset(raw_x, raw_n)
+        current_state.reset(raw_n)
         reward = np.zeros(raw_x.shape, raw_x.dtype)
         sum_reward = 0
-        
+
         for t in range(0, EPISODE_LEN):
             previous_image = current_state.image.copy()
             action, inner_state = agent.act_and_train(current_state.tensor, reward)
             current_state.step(action, inner_state)
             reward = np.square(raw_x - previous_image) - np.square(raw_x - current_state.image)
-            sum_reward += np.mean(reward)*np.power(GAMMA,t)
+            sum_reward = sum_reward + np.mean(reward)*np.power(GAMMA,t) 
 
-            
+        rl, cl, pl = variance_of_laplacianreward(raw_x, current_state.image, previous_image)
         print((current_state.image - raw_x).mean(), (current_state.image - raw_x).var())
         print((current_state.image - previous_image).mean(), (current_state.image - previous_image).var())
-        print("Laplace:" , variance_of_laplacianreward(raw_x, current_state.image, previous_image))
-            
+        print("Laplace:" , rl, cl, pl)
+        
+#         (score, diff) = structural_similarity(current_state.image, raw_x, full=True, multichannel=True)
+#         print("SSIM: {}".format(score))
+        
         agent.stop_episode_and_train(current_state.tensor, reward, True)
         print("train total reward {a}".format(a=sum_reward*255))
         fout.write("train total reward {a}\n".format(a=sum_reward*255))

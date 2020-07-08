@@ -9,29 +9,6 @@ from chainer.links.caffe import CaffeFunction
 import chainerrl
 from chainerrl.agents import a3c
 
-class MyFcn_trained(chainer.Chain, a3c.A3CModel):
- 
-    def __init__(self, n_actions):
-        super(MyFcn_trained, self).__init__(
-            conv1=L.Convolution2D( 3, 64, 3, stride=1, pad=1, nobias=False, initialW=None, initial_bias=None),
-            diconv2=DilatedConvBlock(2, None, None),
-            diconv3=DilatedConvBlock(3, None, None),
-            diconv4=DilatedConvBlock(4, None, None),
-            diconv5_pi=DilatedConvBlock(3, None, None),
-            diconv6_pi=DilatedConvBlock(2, None, None),
-            conv7_Wz=L.Convolution2D( 64, 64, 3, stride=1, pad=1, nobias=True, initialW=None),
-            conv7_Uz=L.Convolution2D( 64, 64, 3, stride=1, pad=1, nobias=True, initialW=None),
-            conv7_Wr=L.Convolution2D( 64, 64, 3, stride=1, pad=1, nobias=True, initialW=None),
-            conv7_Ur=L.Convolution2D( 64, 64, 3, stride=1, pad=1, nobias=True, initialW=None),
-            conv7_W=L.Convolution2D( 64, 64, 3, stride=1, pad=1, nobias=True, initialW=None),
-            conv7_U=L.Convolution2D( 64, 64, 3, stride=1, pad=1, nobias=True, initialW=None),
-            conv8_pi=chainerrl.policies.SoftmaxPolicy(L.Convolution2D( 64, n_actions, 3, stride=1, pad=1, nobias=False, initialW=None)),
-            diconv5_V=DilatedConvBlock(3, None, None),
-            diconv6_V=DilatedConvBlock(2, None, None),
-            conv7_V=L.Convolution2D( 64, 1, 3, stride=1, pad=1, nobias=False, initialW=None, initial_bias=None),
-        )
-
-
 class DilatedConvBlock(chainer.Chain):
 
     def __init__(self, d_factor):
